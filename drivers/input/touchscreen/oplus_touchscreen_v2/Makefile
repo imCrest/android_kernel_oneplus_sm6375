@@ -15,6 +15,8 @@ oplus_bsp_tp_comon-y += touchpanel_proc.o
 oplus_bsp_tp_comon-y += tp_ioctl.o
 oplus_bsp_tp_comon-y += message_list.o
 
+CFLAGS_touchpanel_proc.o += -Wno-frame-larger-than
+
 obj-$(CONFIG_TOUCHPANEL_OPLUS) += oplus_bsp_tp_comon.o
 
 oplus_bsp_tp_notify-y += touchpanel_notify/touchpanel_event_notify.o

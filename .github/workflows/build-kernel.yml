@@ -1,0 +1,189 @@
+name: Build Crest-Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create GitHub Release with zip'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      CC: clang
+      CLANG_TRIPLE: aarch64-linux-gnu-
+      CROSS_COMPILE: aarch64-linux-android-
+      CROSS_COMPILE_COMPAT: arm-linux-androideabi-
+
+    steps:
+      - name: Checkout kernel repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential cpio curl flex git gnupg libelf-dev libncurses5-dev \
+            libssl-dev libxml2 lzop rsync zip zlib1g-dev python3 python-is-python3 \
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi || true
+
+      - name: Setup Clang toolchain
+        run: |
+          set -euo pipefail
+          CLANG_DIR="${GITHUB_WORKSPACE}/clang"
+          mkdir -p "${CLANG_DIR}"
+
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android13-release/clang-r450784d.tar.gz"
+          CLANG_TAR="/tmp/clang.tar.gz"
+
+          echo "::group::Downloading Clang r450784d"
+          for attempt in 1 2 3; do
+            echo "Download attempt ${attempt}..."
+            if curl -fSL --retry 3 --retry-delay 10 --connect-timeout 30 --max-time 600 \
+                 -o "${CLANG_TAR}" "${CLANG_URL}"; then
+              if file "${CLANG_TAR}" | grep -q "gzip"; then
+                echo "✓ Valid gzip archive downloaded ($(du -h "${CLANG_TAR}" | cut -f1))"
+                break
+              else
+                echo "✗ Downloaded file is not gzip format:"
+                file "${CLANG_TAR}"
+                head -c 200 "${CLANG_TAR}" || true
+                rm -f "${CLANG_TAR}"
+              fi
+            else
+              echo "✗ curl failed with exit code $?"
+              rm -f "${CLANG_TAR}"
+            fi
+            [ "${attempt}" -lt 3 ] && sleep 15
+          done
+
+          if [ ! -f "${CLANG_TAR}" ]; then
+            echo "::error::All download attempts failed. Trying git clone fallback..."
+            git clone --depth=1 --single-branch -b android13-release \
+              --filter=blob:none \
+              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+              /tmp/clang-repo
+            cp -a /tmp/clang-repo/clang-r450784d/* "${CLANG_DIR}/"
+            rm -rf /tmp/clang-repo
+          else
+            tar -xzf "${CLANG_TAR}" -C "${CLANG_DIR}"
+            rm -f "${CLANG_TAR}"
+          fi
+          echo "::endgroup::"
+
+          echo "${CLANG_DIR}/bin" >> $GITHUB_PATH
+
+          echo "::group::Setting up toolchain symlinks"
+          for tool in addr2line ar as elfedit ld ld.lld nm objcopy objdump ranlib readelf size strings strip; do
+            if [ -f "${CLANG_DIR}/bin/llvm-${tool}" ]; then
+              ln -sf "llvm-${tool}" "${CLANG_DIR}/bin/aarch64-linux-android-${tool}"
+              ln -sf "llvm-${tool}" "${CLANG_DIR}/bin/arm-linux-androideabi-${tool}"
+            elif [ -f "${CLANG_DIR}/bin/${tool}" ]; then
+              ln -sf "${tool}" "${CLANG_DIR}/bin/aarch64-linux-android-${tool}"
+              ln -sf "${tool}" "${CLANG_DIR}/bin/arm-linux-androideabi-${tool}"
+            elif command -v "aarch64-linux-gnu-${tool}" >/dev/null 2>&1; then
+              ln -sf "$(command -v "aarch64-linux-gnu-${tool}")" "${CLANG_DIR}/bin/aarch64-linux-android-${tool}"
+              ln -sf "$(command -v "arm-linux-gnueabi-${tool}")" "${CLANG_DIR}/bin/arm-linux-androideabi-${tool}"
+            fi
+          done
+
+          ln -sf ld.lld "${CLANG_DIR}/bin/aarch64-linux-android-ld"
+          ln -sf ld.lld "${CLANG_DIR}/bin/arm-linux-androideabi-ld"
+          ln -sf clang "${CLANG_DIR}/bin/aarch64-linux-android-gcc"
+          ln -sf clang "${CLANG_DIR}/bin/arm-linux-androideabi-gcc"
+          echo "::endgroup::"
+
+          echo "Clang version:"
+          "${CLANG_DIR}/bin/clang" --version || echo "Warning: clang binary check failed"
+
+      - name: Build defconfig
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
+          make -j$(nproc) \
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CLANG_TRIPLE="${CLANG_TRIPLE}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" \
+            CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT}" \
+            vendor/holi-qgki_defconfig vendor/debugfs.config
+          make -j$(nproc) \
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CLANG_TRIPLE="${CLANG_TRIPLE}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" \
+            CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT}" \
+            olddefconfig
+
+      - name: Compile kernel
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/clang/bin:${PATH}"
+          make -j$(nproc) \
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CLANG_TRIPLE="${CLANG_TRIPLE}" \
+            CROSS_COMPILE="${CROSS_COMPILE}" \
+            CROSS_COMPILE_COMPAT="${CROSS_COMPILE_COMPAT}" \
+            Image dtbs
+
+      - name: Package with AnyKernel3
+        id: pack-kernel
+        run: |
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            cp out/arch/arm64/boot/Image anykernel/
+          fi
+
+          if [ -f "out/arch/arm64/boot/dtbo.img" ]; then
+            cp out/arch/arm64/boot/dtbo.img anykernel/
+          fi
+
+          find out/arch/arm64/boot -name "*.dtb" -exec cp {} anykernel/ \; 2>/dev/null || true
+          if [ -f "out/arch/arm64/boot/dtb.img" ]; then
+            cp out/arch/arm64/boot/dtb.img anykernel/
+          fi
+
+          TIMESTAMP=$(TZ='Asia/Kolkata' date +%Y%m%d-%H%M)
+          ZIP_NAME="Crest-Kernel-larry-${TIMESTAMP}.zip"
+
+          cd anykernel
+          zip -r9 "../${ZIP_NAME}" * -x ".git*" "README.md"
+          cd ..
+
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_OUTPUT
+          echo "ZIP_PATH=${GITHUB_WORKSPACE}/${ZIP_NAME}" >> $GITHUB_OUTPUT
+          echo "TAG_NAME=v${TIMESTAMP}" >> $GITHUB_OUTPUT
+
+      - name: Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack-kernel.outputs.ZIP_NAME }}
+          path: ${{ steps.pack-kernel.outputs.ZIP_PATH }}
+
+      - name: Create GitHub Release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.pack-kernel.outputs.TAG_NAME }}
+          name: Crest-Kernel larry ${{ steps.pack-kernel.outputs.TAG_NAME }}
+          files: ${{ steps.pack-kernel.outputs.ZIP_PATH }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
