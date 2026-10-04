@@ -14,7 +14,12 @@ device.name1=larry
 device.name2=OP5958L1
 device.name3=CPH2467
 device.name4=CPH2465
-device.name5=sm6375
+device.name5=CPH2469
+device.name6=sm6375
+device.name7=NordCE3Lite
+device.name8=OnePlusNordCE3Lite
+device.name9=holi
+device.name10=blair
 supported.versions=
 supported.patchlevels=
 supported.vendorpatchlevels=
@@ -28,7 +33,7 @@ set_perm_recursive 0 0 750 750 $RAMDISK/init* $RAMDISK/sbin;
 } # end attributes
 
 # boot shell variables
-BLOCK=auto;
+BLOCK=boot;
 IS_SLOT_DEVICE=auto;
 RAMDISK_COMPRESSION=auto;
 PATCH_VBMETA_FLAG=auto;
@@ -40,7 +45,8 @@ PATCH_VBMETA_FLAG=auto;
 ui_print "----------------------------------";
 ui_print "          Crest-Kernel            ";
 ui_print "  OnePlus Nord CE 3 Lite (larry)  ";
-ui_print "       KernelSU-Next Enabled      ";
+ui_print "    KernelSU-Next | Android 17    ";
+ui_print "       ADB Sideload / AOSP        ";
 ui_print "----------------------------------";
 
 # boot install
